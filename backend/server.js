@@ -11,6 +11,13 @@ const jwtSecret = process.env.JWT_SECRET;
 app.use(cors({ origin: (process.env.CLIENT_ORIGIN || 'http://localhost:5173').split(',').map(s => s.trim()) }));
 app.use(express.json({ limit: '1mb' }));
 
+app.get('/', (_req, res) => {
+  res.json({
+    message: 'Halloween Party API funcionando',
+    version: '1.0.0'
+  });
+});
+
 const drinkSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true, maxlength: 100 },
   category: { type: String, required: true, trim: true, maxlength: 60 },
