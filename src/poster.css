@@ -1,0 +1,155 @@
+@import url('https://fonts.googleapis.com/css2?family=Anton&family=Barlow+Condensed:wght@400;600;700;800;900&family=Permanent+Marker&display=swap');
+
+:root {
+  --poster-red: #ed1022;
+  --poster-red-dark: #630812;
+  --poster-white: #f2eee9;
+  --poster-black: #050506;
+}
+
+body { background: var(--poster-black); }
+.app-shell {
+  background:
+    linear-gradient(118deg, transparent 0 44%, rgba(237,16,34,.07) 44.2% 44.8%, transparent 45%),
+    radial-gradient(ellipse at 84% 10%, rgba(190,0,18,.27), transparent 31%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 5px),
+    var(--poster-black);
+}
+.ambient { display: none; }
+.topbar {
+  height: 86px;
+  border-bottom: 2px solid var(--poster-red);
+  background: rgba(5,5,6,.94);
+}
+.brand { font-family: 'Anton','Barlow Condensed',sans-serif; text-transform: uppercase; letter-spacing: 1.5px; }
+.brand-mark { border: 2px solid var(--poster-red); color: var(--poster-red); box-shadow: 4px 4px 0 var(--poster-red-dark); }
+.brand small, .button, .icon-button, .admin-link, .eyebrow, .hero-note, .drink-category, .status, footer { font-family: 'Barlow Condensed',sans-serif; }
+.brand small { color: #d7c6c3; font-weight: 700; letter-spacing: 3px; }
+.icon-button, .admin-link { border-color: #76202a; background: #10090a; border-radius: 0; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; }
+.icon-button:hover, .admin-link:hover { background: var(--poster-red); border-color: var(--poster-red); color: #fff; }
+.hero {
+  max-width: 1380px;
+  min-height: 690px;
+  padding: 80px clamp(24px,6vw,90px) 76px;
+  grid-template-columns: 1.05fr .95fr;
+  position: relative;
+}
+.hero::before {
+  content: 'TERRAZA DON MORENO · 31 OCT';
+  position: absolute;
+  top: 30px;
+  right: 8%;
+  color: var(--poster-red);
+  font: 900 clamp(13px,1.6vw,20px) 'Barlow Condensed',sans-serif;
+  letter-spacing: 5px;
+  transform: rotate(-5deg);
+}
+.hero-copy { max-width: 690px; z-index: 1; }
+.eyebrow { color: #fff; font-weight: 900; letter-spacing: 3px; }
+.eyebrow-line { width: 44px; height: 3px; background: var(--poster-red); }
+.hero h1 {
+  font-family: 'Anton',Impact,sans-serif;
+  font-size: clamp(82px,10vw,158px);
+  line-height: .82;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--poster-white);
+  text-shadow: 6px 6px 0 #31070b;
+  transform: rotate(-2deg);
+  margin: 26px 0 30px;
+}
+.hero h1 .outline { color: transparent; -webkit-text-stroke: 2px var(--poster-white); text-shadow: none; }
+.hero h1 .red { color: var(--poster-red); }
+.hero-copy > p { max-width: 500px; color: #d2c1bd; font-family: 'Barlow Condensed',sans-serif; font-size: 19px; line-height: 1.3; }
+.button { border-radius: 0; text-transform: uppercase; font-weight: 900; letter-spacing: 1px; }
+.button.primary { background: var(--poster-red); border: 2px solid var(--poster-red); box-shadow: 6px 6px 0 var(--poster-red-dark); }
+.button.primary:hover { background: #fff; border-color: #fff; color: #080808; }
+.hero-note { color: var(--poster-red); font-weight: 900; letter-spacing: 2px; }
+.hero-note .pulse { background: var(--poster-red); }
+.hero-art {
+  min-height: 520px;
+  height: 100%;
+  background: radial-gradient(circle at 50% 44%, rgba(237,16,34,.58), transparent 28%), repeating-linear-gradient(135deg, transparent 0 16px, rgba(255,255,255,.045) 17px 18px), #10090a;
+  border: 2px solid #6b151e;
+  clip-path: polygon(6% 0,100% 5%,94% 95%,0 100%);
+  overflow: hidden;
+}
+.hero-art::after { content: 'PARTY\\A SIN\\A BACHATA'; white-space: pre; position: absolute; right: 8%; bottom: 8%; color: var(--poster-white); font: 900 clamp(24px,4vw,58px)/.8 'Anton',sans-serif; text-align: right; transform: rotate(-6deg); text-shadow: 3px 3px 0 var(--poster-red); }
+.moon { background: var(--poster-red); box-shadow: 0 0 90px rgba(237,16,34,.65); opacity: .9; }
+.art-ring { border-color: rgba(255,255,255,.22); }
+.art-ring.ring-two { border-color: var(--poster-red); border-style: dashed; }
+.art-skull { color: var(--poster-white); filter: drop-shadow(0 0 18px var(--poster-red)); }
+.art-stamp { border-color: var(--poster-white); color: var(--poster-white); font-family: 'Anton',sans-serif; }
+.art-side { color: var(--poster-red); font-family: 'Barlow Condensed',sans-serif; font-weight: 900; }
+.menu-section { border-top: 2px solid var(--poster-red); padding-top: 78px; }
+.section-heading h2, .closing-banner h2 { font-family: 'Anton',sans-serif; text-transform: uppercase; letter-spacing: 1px; }
+.section-heading h2 { font-size: clamp(48px,6vw,82px); line-height: .9; }
+.section-heading p { color: #c5b5b2; font-family: 'Barlow Condensed',sans-serif; font-size: 17px; }
+.menu-total { color: var(--poster-red); font-family: 'Anton',sans-serif; }
+.menu-total span { color: var(--poster-white); }
+.search-box { border-color: #6c1a23; border-radius: 0; background: #10090a; }
+.search-box input, .categories button { font-family: 'Barlow Condensed',sans-serif; }
+.categories button { border-radius: 0; border-color: #552027; text-transform: uppercase; font-weight: 800; letter-spacing: 1px; }
+.categories button.active, .categories button:hover { background: var(--poster-red); border-color: var(--poster-red); color: #fff; }
+.drink-card { border: 2px solid #50151d; border-radius: 0; background: #0d0809; box-shadow: 6px 6px 0 #21070a; }
+.drink-card:hover { border-color: var(--poster-red); transform: translateY(-5px) rotate(-.5deg); }
+.drink-image { border-bottom: 2px solid var(--poster-red); }
+.drink-image img { filter: saturate(1.2) contrast(1.12); }
+.drink-details h3 { font-family: 'Anton',sans-serif; text-transform: uppercase; letter-spacing: .5px; }
+.drink-category, .drink-bottom strong { color: var(--poster-red); font-family: 'Barlow Condensed',sans-serif; font-weight: 900; letter-spacing: 1px; }
+.drink-bottom strong { font-size: 27px; }
+.featured-badge, .sold-badge { border-radius: 0; font-family: 'Barlow Condensed',sans-serif; font-weight: 900; }
+.closing-banner { border: 2px solid var(--poster-red); border-radius: 0; background: repeating-linear-gradient(-12deg,#13090a 0 7px,#1d0a0c 8px 9px); }
+.closing-banner h2 { font-size: clamp(28px,4vw,52px); }
+.closing-banner em { color: var(--poster-red); }
+footer { border-top: 2px solid var(--poster-red); background: #080606; font-weight: 800; letter-spacing: 1px; }
+footer button { color: var(--poster-red); font-family: 'Barlow Condensed',sans-serif; text-transform: uppercase; font-weight: 900; }
+
+@media (max-width: 760px) {
+  .topbar { height: 76px; }
+  .hero { min-height: auto; padding: 62px 22px 42px; }
+  .hero::before { top: 22px; right: 22px; }
+  .hero h1 { font-size: clamp(70px,20vw,105px); margin-top: 20px; }
+  .hero-copy > p { font-size: 16px; }
+  .hero-art { min-height: 330px; margin-top: 42px; }
+  .hero-art::after { font-size: 34px; }
+  .menu-section { padding-top: 52px; }
+  .section-heading h2 { font-size: 52px; }
+  .drink-card { box-shadow: 3px 3px 0 #21070a; }
+}
+
+.sponsors {
+  max-width: 1240px;
+  margin: 34px auto 62px;
+  padding: 24px clamp(20px, 5vw, 70px) 28px;
+  border-top: 2px solid var(--poster-red);
+  border-bottom: 1px solid #4d151c;
+  background: linear-gradient(105deg, rgba(237,16,34,.1), transparent 46%);
+  text-align: center;
+}
+.sponsors-label {
+  display: block;
+  color: var(--poster-red);
+  font: 900 12px 'Barlow Condensed', sans-serif;
+  letter-spacing: 4px;
+  margin-bottom: 22px;
+}
+.sponsor-list { display: flex; align-items: center; justify-content: center; gap: clamp(28px, 7vw, 90px); }
+.sponsor { display: grid; grid-template-columns: auto auto; column-gap: 9px; align-items: center; color: var(--poster-white); text-align: left; }
+.sponsor-mark { grid-row: span 2; color: var(--poster-red); font-size: 34px; line-height: 1; }
+.sponsor strong { font: 900 clamp(22px, 3vw, 34px) 'Anton', sans-serif; letter-spacing: 1px; line-height: .9; }
+.sponsor small { color: #c7b7b4; font: 700 12px 'Barlow Condensed', sans-serif; letter-spacing: 3px; }
+.sponsor-divider { width: 1px; height: 48px; background: #6a1a24; transform: rotate(12deg); }
+@media (max-width: 520px) {
+  .sponsors { margin-bottom: 44px; }
+  .sponsor-list { gap: 17px; }
+  .sponsor-divider { height: 38px; }
+  .sponsor strong { font-size: 21px; }
+  .sponsor small { font-size: 10px; letter-spacing: 2px; }
+  .sponsor-mark { font-size: 25px; }
+}
+.sponsor-icon-only { display: flex; min-width: 66px; justify-content: center; }
+.sponsor-bars { display: block; width: 46px; height: 34px; position: relative; transform: skew(-18deg); }
+.sponsor-bars::before, .sponsor-bars::after { content: ''; position: absolute; background: var(--poster-white); }
+.sponsor-bars::before { width: 9px; height: 34px; left: 7px; box-shadow: 14px 0 0 var(--poster-white), 28px 0 0 var(--poster-white); }
+.sponsor-bars::after { width: 38px; height: 5px; left: 4px; top: 15px; background: var(--poster-red); }
