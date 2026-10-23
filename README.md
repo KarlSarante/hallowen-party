@@ -86,6 +86,13 @@ El archivo `vercel.json` permite que la ruta `/admin` cargue la aplicación al e
 ## API disponible
 - `GET /api/health`: estado de la API.
 - `GET /api/drinks`: lista pública de bebidas.
+- `GET /api/settings/orders`: consulta si los pedidos están habilitados.
+- `PUT /api/settings/orders`: habilita o deshabilita los pedidos (requiere JWT).
+- `POST /api/orders`: crea un pedido público; el servidor valida las bebidas y calcula el total.
+- `GET /api/orders`: lista los pedidos (requiere JWT).
+- `PUT /api/orders/:id`: edita mesa, bebidas, cantidades y estado (requiere JWT).
+- `DELETE /api/orders/:id`: elimina un pedido (requiere JWT).
+- `PATCH /api/orders/:id/status`: cambia el estado de un pedido (requiere JWT).
 - `POST /api/auth/login`: inicia sesión y entrega un JWT.
 - `POST /api/drinks`: crea una bebida (requiere JWT).
 - `PUT /api/drinks/:id`: edita una bebida (requiere JWT).

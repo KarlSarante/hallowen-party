@@ -29,6 +29,62 @@ const drinkSchema = new mongoose.Schema({
 }, { timestamps: true });
 const Drink = mongoose.model('Drink', drinkSchema);
 
+
+const orderSchema = new mongoose.Schema({
+  tableNumber: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 20
+  },
+  items: [{
+    drinkId: {
+      type: mongoose.Schema.Types.ObjectId,
+      required: true
+    },
+    name: {
+      type: String,
+      required: true
+    },
+    price: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 50
+    }
+  }],
+  total: {
+    type: Number,
+    required: true,
+    min: 0
+  },
+  status: {
+    type: String,
+    enum: [
+      'Pendiente',
+      'Preparando',
+      'Listo para entregar',
+      'Entregado'
+    ],
+    default: 'Pendiente'
+  }
+}, { timestamps: true });
+
+const Order = mongoose.model('Order', orderSchema);
+
+const orderSettingsSchema = new mongoose.Schema({
+  key: { type: String, unique: true, default: 'global' },
+  orderingEnabled: { type: Boolean, default: false }
+}, { timestamps: true });
+
+const OrderSettings = mongoose.model('OrderSettings', orderSettingsSchema);
+
+
 function auth(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
@@ -48,10 +104,134 @@ app.post('/api/auth/login', async (req, res) => {
   res.json({ token, expiresIn: 28800 });
 });
 
+app.get('/api/settings/orders', async (_req, res) => {
+  try {
+    const settings = await OrderSettings.findOne({ key: 'global' }).lean();
+    res.json({ orderingEnabled: settings?.orderingEnabled === true });
+  } catch (error) {
+    console.error('Error consultando configuración de pedidos:', error);
+    res.status(500).json({ message: 'No se pudo consultar la configuración de pedidos.' });
+  }
+});
+
+app.put('/api/settings/orders', auth, async (req, res) => {
+  if (typeof req.body?.orderingEnabled !== 'boolean') {
+    return res.status(400).json({ message: 'Indica si los pedidos están habilitados.' });
+  }
+
+  try {
+    const settings = await OrderSettings.findOneAndUpdate(
+      { key: 'global' },
+      { $set: { orderingEnabled: req.body.orderingEnabled }, $setOnInsert: { key: 'global' } },
+      { new: true, upsert: true, runValidators: true }
+    ).lean();
+
+    res.json({ orderingEnabled: settings.orderingEnabled });
+  } catch (error) {
+    console.error('Error actualizando configuración de pedidos:', error);
+    res.status(500).json({ message: 'No se pudo actualizar la configuración de pedidos.' });
+  }
+});
+
 app.get('/api/drinks', async (_req, res) => {
   try { const drinks = await Drink.find().sort({ featured: -1, name: 1 }).lean(); res.json(drinks.map(d => ({ ...d, id: String(d._id) }))); }
   catch { res.status(500).json({ message: 'No se pudo cargar el menú.' }); }
 });
+
+
+app.post('/api/orders', async (req, res) => {
+  try {
+    const settings = await OrderSettings.findOne({ key: 'global' }).lean();
+    if (settings?.orderingEnabled !== true) {
+      return res.status(403).json({
+        message: 'Los pedidos están desactivados temporalmente. El menú está disponible solo para consulta.'
+      });
+    }
+
+    const tableNumber = String(req.body?.tableNumber || '').trim();
+    const requestedItems = req.body?.items;
+
+    if (!tableNumber || tableNumber.length > 20) {
+      return res.status(400).json({
+        message: 'Indica un número de mesa válido.'
+      });
+    }
+
+    if (!Array.isArray(requestedItems) ||
+        requestedItems.length === 0 ||
+        requestedItems.length > 30) {
+      return res.status(400).json({
+        message: 'El pedido debe incluir al menos una bebida.'
+      });
+    }
+
+    const quantities = new Map();
+
+    for (const item of requestedItems) {
+      const id = String(item?.drinkId || '');
+      const quantity = Number(item?.quantity);
+
+      if (!mongoose.isValidObjectId(id) ||
+          !Number.isInteger(quantity) ||
+          quantity < 1 ||
+          quantity > 50) {
+        return res.status(400).json({
+          message: 'Hay una bebida o cantidad inválida.'
+        });
+      }
+
+      quantities.set(id, (quantities.get(id) || 0) + quantity);
+
+      if (quantities.get(id) > 50) {
+        return res.status(400).json({
+          message: 'Máximo 50 unidades por bebida.'
+        });
+      }
+    }
+
+    const drinkIds = [...quantities.keys()];
+    const drinks = await Drink.find({
+      _id: { $in: drinkIds },
+      available: true
+    }).lean();
+
+    if (drinks.length !== drinkIds.length) {
+      return res.status(400).json({
+        message: 'Una o más bebidas no están disponibles.'
+      });
+    }
+
+    const items = drinks.map(drink => ({
+      drinkId: drink._id,
+      name: drink.name,
+      price: drink.price,
+      quantity: quantities.get(String(drink._id))
+    }));
+
+    const total = items.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0
+    );
+
+    const order = await Order.create({
+      tableNumber,
+      items,
+      total,
+      status: 'Pendiente'
+    });
+
+    res.status(201).json({
+      message: 'Pedido enviado correctamente.',
+      order
+    });
+  } catch (error) {
+    console.error('Error creando pedido:', error);
+    res.status(500).json({
+      message: 'No se pudo registrar el pedido.'
+    });
+  }
+});
+
 app.post('/api/drinks', auth, async (req, res) => {
   try { const drink = await Drink.create(cleanPayload(req.body)); res.status(201).json({ ...drink.toObject(), id: String(drink._id) }); }
   catch (e) { res.status(400).json({ message: e.name === 'ValidationError' ? e.message : 'Datos de bebida inválidos.' }); }
@@ -69,6 +249,173 @@ app.delete('/api/drinks/:id', auth, async (req, res) => {
   try { const drink = await Drink.findByIdAndDelete(req.params.id); if (!drink) return res.status(404).json({ message: 'Bebida no encontrada.' }); res.json({ message: 'Bebida eliminada.' }); }
   catch { res.status(400).json({ message: 'ID de bebida inválido.' }); }
 });
+
+
+app.get('/api/orders', auth, async (req, res) => {
+  try {
+    const orders = await Order.find()
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json(orders);
+  } catch (error) {
+    console.error('Error consultando pedidos:', error);
+    res.status(500).json({
+      message: 'No se pudieron cargar los pedidos.'
+    });
+  }
+});
+
+app.patch('/api/orders/:id/status', auth, async (req, res) => {
+  const allowedStatuses = [
+    'Pendiente',
+    'Preparando',
+    'Listo para entregar',
+    'Entregado'
+  ];
+
+  const { status } = req.body || {};
+
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({
+      message: 'Estado del pedido inválido.'
+    });
+  }
+
+  try {
+    const order = await Order.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true, runValidators: true }
+    );
+
+    if (!order) {
+      return res.status(404).json({
+        message: 'Pedido no encontrado.'
+      });
+    }
+
+    res.json(order);
+  } catch (error) {
+    res.status(400).json({
+      message: 'No se pudo actualizar el pedido.'
+    });
+  }
+});
+
+app.put('/api/orders/:id', auth, async (req, res) => {
+  const allowedStatuses = [
+    'Pendiente',
+    'Preparando',
+    'Listo para entregar',
+    'Entregado'
+  ];
+
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ message: 'ID de pedido inválido.' });
+  }
+
+  const tableNumber = typeof req.body?.tableNumber === 'string'
+    ? req.body.tableNumber.trim()
+    : '';
+  const requestedItems = req.body?.items;
+  const { status } = req.body || {};
+
+  if (!tableNumber || tableNumber.length > 20) {
+    return res.status(400).json({ message: 'Indica un número de mesa válido.' });
+  }
+
+  if (!Array.isArray(requestedItems) ||
+      requestedItems.length === 0 ||
+      requestedItems.length > 30) {
+    return res.status(400).json({ message: 'El pedido debe incluir al menos una bebida.' });
+  }
+
+  if (!allowedStatuses.includes(status)) {
+    return res.status(400).json({ message: 'Estado del pedido inválido.' });
+  }
+
+  const quantities = new Map();
+  for (const item of requestedItems) {
+    const drinkId = String(item?.drinkId || '');
+    const quantity = Number(item?.quantity);
+
+    if (!mongoose.isValidObjectId(drinkId) ||
+        !Number.isInteger(quantity) ||
+        quantity < 1 ||
+        quantity > 50) {
+      return res.status(400).json({ message: 'Hay una bebida o cantidad inválida.' });
+    }
+
+    const nextQuantity = (quantities.get(drinkId) || 0) + quantity;
+    if (nextQuantity > 50) {
+      return res.status(400).json({ message: 'Máximo 50 unidades por bebida.' });
+    }
+    quantities.set(drinkId, nextQuantity);
+  }
+
+  try {
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ message: 'Pedido no encontrado.' });
+    }
+
+    const drinkIds = [...quantities.keys()];
+    const drinks = await Drink.find({ _id: { $in: drinkIds } }).lean();
+    if (drinks.length !== drinkIds.length) {
+      return res.status(400).json({ message: 'Una o más bebidas no existen.' });
+    }
+
+    const drinksById = new Map(drinks.map(drink => [String(drink._id), drink]));
+    const items = drinkIds.map(drinkId => {
+      const drink = drinksById.get(drinkId);
+      return {
+        drinkId: drink._id,
+        name: drink.name,
+        price: drink.price,
+        quantity: quantities.get(drinkId)
+      };
+    });
+    const total = items.reduce(
+      (sum, item) => sum + item.price * item.quantity,
+      0
+    );
+
+    order.tableNumber = tableNumber;
+    order.items = items;
+    order.total = total;
+    order.status = status;
+    await order.save();
+
+    res.json(order);
+  } catch (error) {
+    console.error('Error editando pedido:', error);
+    if (error.name === 'ValidationError' || error.name === 'CastError') {
+      return res.status(400).json({ message: 'Datos del pedido inválidos.' });
+    }
+    res.status(500).json({ message: 'No se pudo actualizar el pedido.' });
+  }
+});
+
+app.delete('/api/orders/:id', auth, async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    return res.status(400).json({ message: 'ID de pedido inválido.' });
+  }
+
+  try {
+    const order = await Order.findByIdAndDelete(req.params.id);
+    if (!order) {
+      return res.status(404).json({ message: 'Pedido no encontrado.' });
+    }
+
+    res.json({ message: 'Pedido eliminado correctamente.' });
+  } catch (error) {
+    console.error('Error eliminando pedido:', error);
+    res.status(500).json({ message: 'No se pudo eliminar el pedido.' });
+  }
+});
+
+
 function cleanPayload(body = {}) {
   const payload = {};
   for (const key of ['name', 'category', 'price', 'image_url', 'description', 'available', 'featured']) if (body[key] !== undefined) payload[key] = body[key];
