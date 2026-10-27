@@ -25,7 +25,11 @@ const drinkSchema = new mongoose.Schema({
   image_url: { type: String, default: '', trim: true },
   description: { type: String, default: '', trim: true, maxlength: 300 },
   available: { type: Boolean, default: true },
-  featured: { type: Boolean, default: false }
+  featured: { type: Boolean, default: false },
+  stock: { type: Number, default: 0, min: 0 },
+  minimumStock: { type: Number, default: 0, min: 0 },
+  unitsSold: { type: Number, default: 0, min: 0 },
+  inventoryUpdatedAt: { type: Date, default: null }
 }, { timestamps: true });
 const Drink = mongoose.model('Drink', drinkSchema);
 
@@ -69,9 +73,15 @@ const orderSchema = new mongoose.Schema({
       'Pendiente',
       'Preparando',
       'Listo para entregar',
-      'Entregado'
+      'Entregado',
+      'Cancelado'
     ],
     default: 'Pendiente'
+  },
+  inventoryState: {
+    type: String,
+    enum: ['pending', 'sold', 'reversed'],
+    default: 'pending'
   }
 }, { timestamps: true });
 
@@ -84,6 +94,127 @@ const orderSettingsSchema = new mongoose.Schema({
 
 const OrderSettings = mongoose.model('OrderSettings', orderSettingsSchema);
 
+const inventoryMovementSchema = new mongoose.Schema({
+  drink: { type: mongoose.Schema.Types.ObjectId, ref: 'Drink', required: true },
+  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+  type: { type: String, enum: ['entrada', 'venta', 'ajuste', 'devolucion'], required: true },
+  quantity: { type: Number, required: true, min: 1 },
+  previousStock: { type: Number, required: true, min: 0 },
+  nextStock: { type: Number, required: true, min: 0 },
+  reason: { type: String, default: '', trim: true, maxlength: 300 },
+  adminEmail: { type: String, default: '' },
+  idempotencyKey: { type: String, unique: true, sparse: true },
+  voidedAt: { type: Date, default: null },
+  voidedBy: { type: String, default: '' },
+  voidReason: { type: String, default: '' }
+}, { timestamps: true });
+const InventoryMovement = mongoose.model('InventoryMovement', inventoryMovementSchema);
+
+const saleStatus = 'Entregado';
+const allowedOrderStatuses = ['Pendiente', 'Preparando', 'Listo para entregar', saleStatus, 'Cancelado'];
+
+function inventoryStatus(drink) {
+  if (Number(drink.stock || 0) <= 0) return 'Agotado';
+  if (Number(drink.stock || 0) <= Number(drink.minimumStock || 0)) return 'Stock bajo';
+  return 'Disponible';
+}
+
+function stockError(drink, quantity) {
+  return drink
+    ? `Stock insuficiente para "${drink.name}". Disponible: ${drink.stock}, solicitado: ${quantity}.`
+    : 'La bebida ya no existe.';
+}
+
+async function withTransaction(work) {
+  const session = await mongoose.startSession();
+  try {
+    let result;
+    await session.withTransaction(async () => { result = await work(session); });
+    return result;
+  } finally {
+    await session.endSession();
+  }
+}
+
+async function applyInventoryDelta(drinkId, delta, options = {}) {
+  if (!Number.isInteger(delta) || delta === 0) return;
+  const { orderId = null, type, reason = '', adminEmail = '', idempotencyKey, session } = options;
+  if (idempotencyKey) {
+    const existing = await InventoryMovement.findOne({ idempotencyKey }).session(session);
+    if (existing) return;
+  }
+  const query = { _id: drinkId };
+  if (delta < 0) query.stock = { $gte: Math.abs(delta) };
+  const drink = await Drink.findOneAndUpdate(
+    query,
+    {
+      $inc: { stock: delta, ...(delta < 0 ? { unitsSold: Math.abs(delta) } : type === 'devolucion' ? { unitsSold: -Math.abs(delta) } : {}) },
+      $set: { inventoryUpdatedAt: new Date() }
+    },
+    { new: false, session }
+  );
+  if (!drink) {
+    const current = await Drink.findById(drinkId).session(session);
+    if (!current) throw Object.assign(new Error('Bebida no encontrada.'), { statusCode: 404 });
+    throw Object.assign(new Error(stockError(current, Math.abs(delta))), { statusCode: 409 });
+  }
+  const previousStock = drink.stock;
+  await InventoryMovement.create([{
+    drink: drink._id,
+    order: orderId,
+    type,
+    quantity: Math.abs(delta),
+    previousStock,
+    nextStock: previousStock + delta,
+    reason,
+    adminEmail,
+    idempotencyKey
+  }], { session });
+}
+
+function itemQuantities(items = []) {
+  return new Map(items.map(item => [String(item.drinkId), Number(item.quantity)]));
+}
+
+async function syncOrderInventory(order, previousItems, previousState, session, adminEmail) {
+  const wasSold = previousState === 'sold';
+  const isSold = order.status === saleStatus;
+  if (order.status === 'Cancelado' && wasSold) {
+    for (const [drinkId, quantity] of itemQuantities(previousItems)) {
+      await applyInventoryDelta(drinkId, quantity, {
+        orderId: order._id, type: 'devolucion', reason: 'Venta cancelada',
+        adminEmail, idempotencyKey: `order:${order._id}:return`, session
+      });
+    }
+    order.inventoryState = 'reversed';
+    return;
+  }
+  if (!wasSold && isSold) {
+    for (const [drinkId, quantity] of itemQuantities(order.items)) {
+      await applyInventoryDelta(drinkId, -quantity, {
+        orderId: order._id, type: 'venta', reason: 'Pedido entregado',
+        adminEmail, idempotencyKey: `order:${order._id}:sale:${drinkId}`, session
+      });
+    }
+    order.inventoryState = 'sold';
+    return;
+  }
+  if (wasSold && isSold) {
+    const before = itemQuantities(previousItems);
+    const after = itemQuantities(order.items);
+    const ids = new Set([...before.keys(), ...after.keys()]);
+    for (const drinkId of ids) {
+      const delta = (after.get(drinkId) || 0) - (before.get(drinkId) || 0);
+      if (delta !== 0) {
+        await applyInventoryDelta(drinkId, -delta, {
+          orderId: order._id, type: delta > 0 ? 'venta' : 'devolucion',
+          reason: 'Diferencia por edición del pedido', adminEmail,
+          idempotencyKey: `order:${order._id}:edit:${new Date().toISOString()}:${drinkId}`, session
+        });
+      }
+    }
+  }
+}
 
 function auth(req, res, next) {
   const header = req.headers.authorization || '';
@@ -153,7 +284,7 @@ app.post('/api/orders', async (req, res) => {
 
     if (!tableNumber || tableNumber.length > 20) {
       return res.status(400).json({
-        message: 'Indica un número de mesa válido.'
+        message: 'Indica un número de mesa o mueble válido.'
       });
     }
 
@@ -192,12 +323,13 @@ app.post('/api/orders', async (req, res) => {
     const drinkIds = [...quantities.keys()];
     const drinks = await Drink.find({
       _id: { $in: drinkIds },
-      available: true
+      available: true,
+      stock: { $gt: 0 }
     }).lean();
 
     if (drinks.length !== drinkIds.length) {
       return res.status(400).json({
-        message: 'Una o más bebidas no están disponibles.'
+        message: 'Una o más bebidas no están disponibles o no tienen existencias.'
       });
     }
 
@@ -250,6 +382,282 @@ app.delete('/api/drinks/:id', auth, async (req, res) => {
   catch { res.status(400).json({ message: 'ID de bebida inválido.' }); }
 });
 
+app.get('/api/inventory', auth, async (_req, res) => {
+  try {
+    const drinks = await Drink.find().sort({ name: 1 }).lean();
+    const items = drinks.map(drink => ({
+      ...drink,
+      id: String(drink._id),
+      status: inventoryStatus(drink)
+    }));
+    res.json({
+      items,
+      summary: {
+        totalAvailable: items.reduce((sum, item) => sum + item.stock, 0),
+        totalSold: items.reduce((sum, item) => sum + item.unitsSold, 0),
+        productCount: items.length,
+        lowStock: items.filter(item => item.status === 'Stock bajo').length,
+        outOfStock: items.filter(item => item.status === 'Agotado').length
+      }
+    });
+  } catch (error) {
+    console.error('Error consultando inventario:', error);
+    res.status(500).json({ message: 'No se pudo cargar el inventario.' });
+  }
+});
+
+app.get('/api/inventory/movements', auth, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const movements = await InventoryMovement.find()
+      .populate('drink', 'name category')
+      .populate('order', 'tableNumber')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    res.json(movements);
+  } catch (error) {
+    console.error('Error consultando movimientos:', error);
+    res.status(500).json({ message: 'No se pudo cargar el historial de inventario.' });
+  }
+});
+
+app.get('/api/inventory/sales', auth, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 200, 1), 500);
+    const movements = await InventoryMovement.find({ type: 'venta', voidedAt: null })
+      .populate('drink', 'name category price')
+      .populate('order', 'tableNumber')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    const sales = movements.map(movement => ({
+      id: String(movement._id),
+      drinkName: movement.drink?.name || 'Bebida eliminada',
+      category: movement.drink?.category || '',
+      quantity: movement.quantity,
+      unitPrice: Number(movement.drink?.price || 0),
+      total: Number(movement.drink?.price || 0) * movement.quantity,
+      createdAt: movement.createdAt,
+      source: movement.order ? 'Pedido' : 'Venta rápida',
+      tableNumber: movement.order?.tableNumber || ''
+    }));
+    res.json({
+      sales,
+      summary: {
+        totalUnits: sales.reduce((sum, sale) => sum + sale.quantity, 0),
+        totalAmount: sales.reduce((sum, sale) => sum + sale.total, 0)
+      }
+    });
+  } catch (error) {
+    console.error('Error consultando ventas:', error);
+    res.status(500).json({ message: 'No se pudo cargar el resumen de ventas.' });
+  }
+});
+
+app.put('/api/inventory/sales/:movementId', auth, async (req, res) => {
+  const quantity = Number(req.body?.quantity);
+  if (!mongoose.isValidObjectId(req.params.movementId) || !Number.isInteger(quantity) || quantity < 1 || quantity > 10000) {
+    return res.status(400).json({ message: 'Indica una cantidad válida.' });
+  }
+  try {
+    const sale = await InventoryMovement.findOne({ _id: req.params.movementId, type: 'venta', voidedAt: null }).lean();
+    if (!sale) return res.status(404).json({ message: 'Venta no encontrada o ya anulada.' });
+    if (sale.order) return res.status(409).json({ message: 'Las ventas de pedidos se editan desde el pedido original.' });
+    const delta = quantity - sale.quantity;
+    if (delta !== 0) {
+      const drink = await Drink.findOneAndUpdate(
+        delta > 0 ? { _id: sale.drink, stock: { $gte: delta } } : { _id: sale.drink },
+        { $inc: { stock: -delta, unitsSold: delta }, $set: { inventoryUpdatedAt: new Date() } },
+        { new: false }
+      ).lean();
+      if (!drink) {
+        const current = await Drink.findById(sale.drink).lean();
+        return res.status(409).json({ message: stockError(current, delta) });
+      }
+      await InventoryMovement.create({
+        drink: sale.drink,
+        type: delta > 0 ? 'venta' : 'devolucion',
+        quantity: Math.abs(delta),
+        previousStock: drink.stock,
+        nextStock: drink.stock - delta,
+        reason: 'Corrección de venta rápida',
+        adminEmail: req.admin.email
+      });
+    }
+    const updated = await InventoryMovement.findByIdAndUpdate(
+      sale._id,
+      { quantity },
+      { new: true, runValidators: true }
+    ).lean();
+    res.json(updated);
+  } catch (error) {
+    console.error('Error editando venta:', error);
+    res.status(500).json({ message: 'No se pudo editar la venta.' });
+  }
+});
+
+app.delete('/api/inventory/sales/:movementId', auth, async (req, res) => {
+  if (!mongoose.isValidObjectId(req.params.movementId)) {
+    return res.status(400).json({ message: 'ID de venta inválido.' });
+  }
+  try {
+    const sale = await InventoryMovement.findOneAndUpdate(
+      { _id: req.params.movementId, type: 'venta', voidedAt: null },
+      { $set: { voidedAt: new Date(), voidedBy: req.admin.email, voidReason: 'Venta eliminada' } },
+      { new: false }
+    ).lean();
+    if (!sale) return res.status(404).json({ message: 'Venta no encontrada o ya anulada.' });
+    if (sale.order) return res.status(409).json({ message: 'Las ventas de pedidos se eliminan cancelando el pedido original.' });
+    const drink = await Drink.findByIdAndUpdate(
+      sale.drink,
+      { $inc: { stock: sale.quantity, unitsSold: -sale.quantity }, $set: { inventoryUpdatedAt: new Date() } },
+      { new: false }
+    ).lean();
+    if (!drink) return res.status(404).json({ message: 'Bebida asociada no encontrada.' });
+    await InventoryMovement.create({
+      drink: sale.drink,
+      type: 'devolucion',
+      quantity: sale.quantity,
+      previousStock: drink.stock,
+      nextStock: drink.stock + sale.quantity,
+      reason: 'Venta eliminada',
+      adminEmail: req.admin.email
+    });
+    res.json({ message: 'Venta anulada y unidades devueltas.' });
+  } catch (error) {
+    console.error('Error eliminando venta:', error);
+    res.status(500).json({ message: 'No se pudo eliminar la venta.' });
+  }
+});
+
+app.patch('/api/inventory/:drinkId', auth, async (req, res) => {
+  const { drinkId } = req.params;
+  const type = req.body?.type;
+  const quantity = Number(req.body?.quantity);
+  const reason = String(req.body?.reason || '').trim();
+  const minimumStock = req.body?.minimumStock;
+  if (!mongoose.isValidObjectId(drinkId)) return res.status(400).json({ message: 'ID de bebida inválido.' });
+  const targetStock = Number(req.body?.targetStock);
+  if (!['entrada', 'ajuste', 'venta', 'edicion'].includes(type) ||
+      (type !== 'edicion' && (!Number.isInteger(quantity) || quantity <= 0 || quantity > 10000)) ||
+      (type === 'edicion' && (!Number.isInteger(targetStock) || targetStock < 0 || targetStock > 100000))) {
+    return res.status(400).json({ message: 'Indica un tipo y una cantidad válida.' });
+  }
+  if (type === 'ajuste' && !reason) return res.status(400).json({ message: 'Indica el motivo del ajuste.' });
+  if (minimumStock !== undefined && (!Number.isInteger(Number(minimumStock)) || Number(minimumStock) < 0)) {
+    return res.status(400).json({ message: 'El stock mínimo debe ser un entero no negativo.' });
+  }
+  try {
+    if (type === 'edicion') {
+      const current = await Drink.findById(drinkId).lean();
+      if (!current) return res.status(404).json({ message: 'Bebida no encontrada.' });
+      const delta = targetStock - current.stock;
+      if (delta !== 0) {
+        const updated = await Drink.findOneAndUpdate(
+          delta < 0 ? { _id: drinkId, stock: { $gte: Math.abs(delta) } } : { _id: drinkId },
+          {
+            $inc: { stock: delta },
+            $set: { minimumStock: Number(minimumStock), inventoryUpdatedAt: new Date() }
+          },
+          { new: false }
+        ).lean();
+        if (!updated) {
+          const latest = await Drink.findById(drinkId).lean();
+          return res.status(409).json({ message: stockError(latest, Math.abs(delta)) });
+        }
+        await InventoryMovement.create({
+          drink: drinkId,
+          type: 'ajuste',
+          quantity: Math.abs(delta),
+          previousStock: updated.stock,
+          nextStock: targetStock,
+          reason: reason || 'Edición directa del inventario',
+          adminEmail: req.admin.email
+        });
+      } else {
+        await Drink.findByIdAndUpdate(drinkId, {
+          minimumStock: Number(minimumStock),
+          inventoryUpdatedAt: new Date()
+        });
+      }
+      const result = await Drink.findById(drinkId).lean();
+      return res.json({ ...result, id: String(result._id), status: inventoryStatus(result) });
+    }
+
+    if (type === 'venta') {
+      const current = await Drink.findById(drinkId).lean();
+      if (!current) return res.status(404).json({ message: 'Bebida no encontrada.' });
+      const idempotencyKey = req.get('Idempotency-Key') || undefined;
+      if (idempotencyKey) {
+        const existing = await InventoryMovement.findOne({ idempotencyKey }).lean();
+        if (existing) {
+          const unchanged = await Drink.findById(drinkId).lean();
+          return res.json({ ...unchanged, id: String(unchanged._id), status: inventoryStatus(unchanged) });
+        }
+      }
+      const updated = await Drink.findOneAndUpdate(
+        { _id: drinkId, stock: { $gte: quantity } },
+        { $inc: { stock: -quantity, unitsSold: quantity }, $set: { inventoryUpdatedAt: new Date() } },
+        { new: false }
+      ).lean();
+      if (!updated) {
+        const latest = await Drink.findById(drinkId).lean();
+        return res.status(409).json({ message: stockError(latest, quantity) });
+      }
+      await InventoryMovement.create({
+        drink: drinkId,
+        type: 'venta',
+        quantity,
+        previousStock: updated.stock,
+        nextStock: updated.stock - quantity,
+        reason: 'Venta rápida',
+        adminEmail: req.admin.email,
+        idempotencyKey
+      });
+      const result = await Drink.findById(drinkId).lean();
+      return res.json({ ...result, id: String(result._id), status: inventoryStatus(result) });
+    }
+
+    const drink = await withTransaction(async session => {
+      const current = await Drink.findById(drinkId).session(session);
+      if (!current) throw Object.assign(new Error('Bebida no encontrada.'), { statusCode: 404 });
+      const delta = type === 'entrada' ? quantity : (type === 'venta' || req.body.direction === 'salida' ? -quantity : quantity);
+      await applyInventoryDelta(drinkId, delta, {
+        type, reason: reason || (type === 'entrada' ? 'Reposición de inventario' : type === 'venta' ? 'Venta rápida' : 'Ajuste de inventario'),
+        adminEmail: req.admin.email, idempotencyKey: req.get('Idempotency-Key') || undefined, session
+      });
+      if (minimumStock !== undefined) current.minimumStock = Number(minimumStock);
+      await current.save({ session });
+      return Drink.findById(drinkId).session(session).lean();
+    });
+    res.json({ ...drink, id: String(drink._id), status: inventoryStatus(drink) });
+  } catch (error) {
+    console.error('Error actualizando inventario:', error);
+    res.status(error.statusCode || (error.code === 11000 ? 409 : 500)).json({
+      message: error.statusCode ? error.message : 'No se pudo actualizar el inventario.'
+    });
+  }
+});
+
+app.patch('/api/inventory/:drinkId/minimum', auth, async (req, res) => {
+  const minimumStock = Number(req.body?.minimumStock);
+  if (!mongoose.isValidObjectId(req.params.drinkId) || !Number.isInteger(minimumStock) || minimumStock < 0) {
+    return res.status(400).json({ message: 'El stock mínimo debe ser un entero no negativo.' });
+  }
+  try {
+    const drink = await Drink.findByIdAndUpdate(
+      req.params.drinkId,
+      { minimumStock, inventoryUpdatedAt: new Date() },
+      { new: true, runValidators: true }
+    ).lean();
+    if (!drink) return res.status(404).json({ message: 'Bebida no encontrada.' });
+    res.json({ ...drink, id: String(drink._id), status: inventoryStatus(drink) });
+  } catch (error) {
+    res.status(400).json({ message: 'No se pudo configurar el stock mínimo.' });
+  }
+});
+
 
 app.get('/api/orders', auth, async (req, res) => {
   try {
@@ -267,50 +675,35 @@ app.get('/api/orders', auth, async (req, res) => {
 });
 
 app.patch('/api/orders/:id/status', auth, async (req, res) => {
-  const allowedStatuses = [
-    'Pendiente',
-    'Preparando',
-    'Listo para entregar',
-    'Entregado'
-  ];
-
   const { status } = req.body || {};
 
-  if (!allowedStatuses.includes(status)) {
+  if (!allowedOrderStatuses.includes(status)) {
     return res.status(400).json({
       message: 'Estado del pedido inválido.'
     });
   }
 
   try {
-    const order = await Order.findByIdAndUpdate(
-      req.params.id,
-      { status },
-      { new: true, runValidators: true }
-    );
-
-    if (!order) {
-      return res.status(404).json({
-        message: 'Pedido no encontrado.'
-      });
-    }
-
+    const order = await withTransaction(async session => {
+      const current = await Order.findById(req.params.id).session(session);
+      if (!current) throw Object.assign(new Error('Pedido no encontrado.'), { statusCode: 404 });
+      const previousState = current.inventoryState;
+      const previousItems = current.items.map(item => item.toObject());
+      current.status = status;
+      await syncOrderInventory(current, previousItems, previousState, session, req.admin.email);
+      await current.save({ session });
+      return current;
+    });
     res.json(order);
   } catch (error) {
-    res.status(400).json({
-      message: 'No se pudo actualizar el pedido.'
+    console.error('Error actualizando estado del pedido:', error);
+    res.status(error.statusCode || (error.code === 11000 ? 409 : 400)).json({
+      message: error.statusCode ? error.message : error.message || 'No se pudo actualizar el pedido.'
     });
   }
 });
 
 app.put('/api/orders/:id', auth, async (req, res) => {
-  const allowedStatuses = [
-    'Pendiente',
-    'Preparando',
-    'Listo para entregar',
-    'Entregado'
-  ];
-
   if (!mongoose.isValidObjectId(req.params.id)) {
     return res.status(400).json({ message: 'ID de pedido inválido.' });
   }
@@ -322,7 +715,7 @@ app.put('/api/orders/:id', auth, async (req, res) => {
   const { status } = req.body || {};
 
   if (!tableNumber || tableNumber.length > 20) {
-    return res.status(400).json({ message: 'Indica un número de mesa válido.' });
+    return res.status(400).json({ message: 'Indica un número de mesa o mueble válido.' });
   }
 
   if (!Array.isArray(requestedItems) ||
@@ -331,7 +724,7 @@ app.put('/api/orders/:id', auth, async (req, res) => {
     return res.status(400).json({ message: 'El pedido debe incluir al menos una bebida.' });
   }
 
-  if (!allowedStatuses.includes(status)) {
+  if (!allowedOrderStatuses.includes(status)) {
     return res.status(400).json({ message: 'Estado del pedido inválido.' });
   }
 
@@ -355,37 +748,31 @@ app.put('/api/orders/:id', auth, async (req, res) => {
   }
 
   try {
-    const order = await Order.findById(req.params.id);
-    if (!order) {
-      return res.status(404).json({ message: 'Pedido no encontrado.' });
-    }
+    const order = await withTransaction(async session => {
+      const currentOrder = await Order.findById(req.params.id).session(session);
+      if (!currentOrder) throw Object.assign(new Error('Pedido no encontrado.'), { statusCode: 404 });
 
-    const drinkIds = [...quantities.keys()];
-    const drinks = await Drink.find({ _id: { $in: drinkIds } }).lean();
-    if (drinks.length !== drinkIds.length) {
-      return res.status(400).json({ message: 'Una o más bebidas no existen.' });
-    }
+      const drinkIds = [...quantities.keys()];
+      const drinks = await Drink.find({ _id: { $in: drinkIds } }).session(session).lean();
+      if (drinks.length !== drinkIds.length) throw Object.assign(new Error('Una o más bebidas no existen.'), { statusCode: 400 });
 
-    const drinksById = new Map(drinks.map(drink => [String(drink._id), drink]));
-    const items = drinkIds.map(drinkId => {
-      const drink = drinksById.get(drinkId);
-      return {
-        drinkId: drink._id,
-        name: drink.name,
-        price: drink.price,
-        quantity: quantities.get(drinkId)
-      };
+      const drinksById = new Map(drinks.map(drink => [String(drink._id), drink]));
+      const items = drinkIds.map(drinkId => {
+        const drink = drinksById.get(drinkId);
+        return { drinkId: drink._id, name: drink.name, price: drink.price, quantity: quantities.get(drinkId) };
+      });
+      const total = items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+      const previousItems = currentOrder.items.map(item => item.toObject());
+      const previousState = currentOrder.inventoryState;
+      currentOrder.tableNumber = tableNumber;
+      currentOrder.items = items;
+      currentOrder.total = total;
+      currentOrder.status = status;
+      await syncOrderInventory(currentOrder, previousItems, previousState, session, req.admin.email);
+      await currentOrder.save({ session });
+      return currentOrder;
     });
-    const total = items.reduce(
-      (sum, item) => sum + item.price * item.quantity,
-      0
-    );
-
-    order.tableNumber = tableNumber;
-    order.items = items;
-    order.total = total;
-    order.status = status;
-    await order.save();
 
     res.json(order);
   } catch (error) {
@@ -393,7 +780,7 @@ app.put('/api/orders/:id', auth, async (req, res) => {
     if (error.name === 'ValidationError' || error.name === 'CastError') {
       return res.status(400).json({ message: 'Datos del pedido inválidos.' });
     }
-    res.status(500).json({ message: 'No se pudo actualizar el pedido.' });
+    res.status(error.statusCode || 500).json({ message: error.statusCode ? error.message : 'No se pudo actualizar el pedido.' });
   }
 });
 

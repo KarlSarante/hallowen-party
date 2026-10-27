@@ -98,6 +98,32 @@ El archivo `vercel.json` permite que la ruta `/admin` cargue la aplicación al e
 - `PUT /api/drinks/:id`: edita una bebida (requiere JWT).
 - `PATCH /api/drinks/:id`: cambia disponibilidad (requiere JWT).
 - `DELETE /api/drinks/:id`: elimina una bebida (requiere JWT).
+- `GET /api/inventory`: consulta existencias, estados y resumen (requiere JWT).
+- `PATCH /api/inventory/:drinkId`: registra entradas o ajustes de inventario (requiere JWT).
+- `PATCH /api/inventory/:drinkId/minimum`: configura el stock mínimo (requiere JWT).
+- `GET /api/inventory/movements`: consulta el historial auditable (requiere JWT).
+
+## Inventario y pedidos
+
+El panel privado tiene páginas separadas para **Bebidas y pedidos**, **Ventas rápidas**
+(`/admin/sales`) e **Inventario** (`/admin/inventory`). En Ventas rápidas se selecciona
+una bebida, se escribe cuántas unidades se vendieron y se registra la operación sin
+crear un pedido de mesa.
+
+Cada bebida conserva en MongoDB los campos `stock`, `minimumStock`, `unitsSold` e
+`inventoryUpdatedAt`; no existe un catálogo separado. El inventario inicial se
+registra desde **Admin > Inventario > Gestionar**, usando **Entrada / reposición**
+con la cantidad inicial y el stock mínimo. Los ajustes por pérdidas o conteos se
+registran con **Ajuste**, seleccionando si suman o restan y escribiendo el motivo.
+
+La única confirmación de venta de los pedidos es el estado **Entregado**. Los pedidos pendientes,
+en preparación o listos no descuentan existencias. Al entregar, la API valida y
+descuenta dentro de una transacción de MongoDB, registra un movimiento `venta` y
+marca el pedido como aplicado. Repetir el estado no vuelve a descontar. Las ventas
+rápidas también registran directamente un movimiento `venta`. Cancelar
+un pedido entregado crea un movimiento `devolucion` una sola vez; editar una
+venta entregada aplica únicamente la diferencia de cantidades. El servidor nunca
+acepta que el stock resulte negativo.
 
 ## Seguridad
 - El frontend nunca contiene credenciales de MongoDB.
