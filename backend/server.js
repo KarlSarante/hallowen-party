@@ -35,6 +35,11 @@ const Drink = mongoose.model('Drink', drinkSchema);
 
 
 const orderSchema = new mongoose.Schema({
+  locationType: {
+    type: String,
+    enum: ['mesa', 'mueble'],
+    default: 'mesa'
+  },
   tableNumber: {
     type: String,
     required: true,
@@ -279,10 +284,11 @@ app.post('/api/orders', async (req, res) => {
       });
     }
 
+    const locationType = String(req.body?.locationType || '').trim();
     const tableNumber = String(req.body?.tableNumber || '').trim();
     const requestedItems = req.body?.items;
 
-    if (!tableNumber || tableNumber.length > 20) {
+    if (!['mesa', 'mueble'].includes(locationType) || !tableNumber || tableNumber.length > 20) {
       return res.status(400).json({
         message: 'Indica un número de mesa o mueble válido.'
       });
@@ -347,6 +353,7 @@ app.post('/api/orders', async (req, res) => {
 
     const order = await Order.create({
       tableNumber,
+      locationType,
       items,
       total,
       status: 'Pendiente'
@@ -708,13 +715,16 @@ app.put('/api/orders/:id', auth, async (req, res) => {
     return res.status(400).json({ message: 'ID de pedido inválido.' });
   }
 
+  const locationType = typeof req.body?.locationType === 'string'
+    ? req.body.locationType.trim()
+    : '';
   const tableNumber = typeof req.body?.tableNumber === 'string'
     ? req.body.tableNumber.trim()
     : '';
   const requestedItems = req.body?.items;
   const { status } = req.body || {};
 
-  if (!tableNumber || tableNumber.length > 20) {
+  if (!['mesa', 'mueble'].includes(locationType) || !tableNumber || tableNumber.length > 20) {
     return res.status(400).json({ message: 'Indica un número de mesa o mueble válido.' });
   }
 
@@ -766,6 +776,7 @@ app.put('/api/orders/:id', auth, async (req, res) => {
       const previousItems = currentOrder.items.map(item => item.toObject());
       const previousState = currentOrder.inventoryState;
       currentOrder.tableNumber = tableNumber;
+      currentOrder.locationType = locationType;
       currentOrder.items = items;
       currentOrder.total = total;
       currentOrder.status = status;

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QRCodeSVG } from "qrcode.react";
+import { jsPDF } from "jspdf";
 import {
   Skull,
   Search,
@@ -72,6 +73,7 @@ function App() {
 
   // Estado del carrito y de los pedidos
   const [cart, setCart] = useState({});
+  const [locationType, setLocationType] = useState("mesa");
   const [tableNumber, setTableNumber] = useState("");
   const [orders, setOrders] = useState([]);
   const [loadingOrders, setLoadingOrders] = useState(false);
@@ -178,12 +180,14 @@ function App() {
         method: "POST",
         body: JSON.stringify({
           tableNumber: table,
+          locationType,
           items,
         }),
       });
 
       setCart({});
       setTableNumber("");
+      setLocationType("mesa");
       setNotice(result.message || "¡Pedido enviado correctamente!");
     } catch (error) {
       setOrderError(error.message);
@@ -410,6 +414,7 @@ function App() {
     setOrderEditing(order);
     setOrderDraft({
       tableNumber: order.tableNumber,
+      locationType: order.locationType || "mesa",
       status: order.status,
       items: (order.items || []).map((item) => ({
         drinkId: String(item.drinkId),
@@ -521,6 +526,7 @@ function App() {
         method: "PUT",
         body: JSON.stringify({
           tableNumber: table,
+          locationType: orderDraft.locationType,
           items,
           status: orderDraft.status,
         }),
@@ -538,6 +544,51 @@ function App() {
     } finally {
       setSavingOrder(false);
     }
+
+  }
+
+  function downloadInvoice(order) {
+    const pdf = new jsPDF();
+    const locationLabel = order.locationType === "mueble" ? "Mueble" : "Mesa";
+    let y = 22;
+    pdf.setFontSize(20);
+    pdf.setTextColor(190, 25, 45);
+    pdf.text("HALLOWEEN PARTY", 20, y);
+    y += 12;
+    pdf.setFontSize(12);
+    pdf.setTextColor(30, 30, 30);
+    pdf.text("FACTURA DE PEDIDO", 20, y);
+    y += 10;
+    pdf.setFontSize(10);
+    pdf.text(`Pedido: ${String(order._id).slice(-8).toUpperCase()}`, 20, y);
+    y += 6;
+    pdf.text(`${locationLabel}: ${order.tableNumber}`, 20, y);
+    y += 6;
+    pdf.text(
+      `Fecha: ${order.createdAt ? new Date(order.createdAt).toLocaleString("es-DO") : "No disponible"}`,
+      20,
+      y,
+    );
+    y += 12;
+    pdf.setDrawColor(180, 180, 180);
+    pdf.line(20, y, 190, y);
+    y += 9;
+    order.items.forEach((item) => {
+      pdf.text(`${item.name} x ${item.quantity}`, 20, y);
+      pdf.text(money(item.price * item.quantity), 190, y, { align: "right" });
+      y += 7;
+    });
+    y += 4;
+    pdf.line(20, y, 190, y);
+    y += 10;
+    pdf.setFontSize(14);
+    pdf.text("TOTAL", 20, y);
+    pdf.text(money(order.total), 190, y, { align: "right" });
+    y += 12;
+    pdf.setFontSize(9);
+    pdf.setTextColor(100, 100, 100);
+    pdf.text("Gracias por compartir esta noche con nosotros.", 20, y);
+    pdf.save(`factura-${String(order._id).slice(-8)}.pdf`);
   }
 
   useEffect(() => {
@@ -1453,7 +1504,21 @@ function App() {
 
                         <div className="form-grid">
                           <label>
-                            Número de mesa o mueble
+                            Tipo de ubicación
+                            <select
+                              value={orderDraft.locationType}
+                              onChange={(event) =>
+                                updateOrderDraft({
+                                  locationType: event.target.value,
+                                })
+                              }
+                            >
+                              <option value="mesa">Mesa</option>
+                              <option value="mueble">Mueble</option>
+                            </select>
+                          </label>
+                          <label>
+                            Número o nombre de ubicación
                             <input
                               value={orderDraft.tableNumber}
                               onChange={(event) =>
@@ -1588,7 +1653,9 @@ function App() {
                           <article className="order-card" key={order._id}>
                             <div className="order-card-heading">
                               <div>
-                                <span className="eyebrow">MESA / MUEBLE</span>
+                                <span className="eyebrow">
+                                  {order.locationType === "mueble" ? "MUEBLE" : "MESA"}
+                                </span>
                                 <h3>{order.tableNumber}</h3>
                               </div>
                               <strong>{money(order.total)}</strong>
@@ -1633,6 +1700,13 @@ function App() {
                                 ))}
                               </select>
                             </label>
+                            <button
+                              className="button ghost order-edit-button"
+                              onClick={() => downloadInvoice(order)}
+                              type="button"
+                            >
+                              Descargar factura PDF
+                            </button>
                             <button
                               className="button ghost order-edit-button"
                               onClick={() => startOrderEditing(order)}
@@ -1806,16 +1880,28 @@ function App() {
                   submitOrder();
                 }}
               >
-                <label>
-                  Número de mesa o mueble
+                <div className="form-grid">
+                  <label>
+                    Tipo de ubicación
+                    <select
+                      value={locationType}
+                      onChange={(e) => setLocationType(e.target.value)}
+                    >
+                      <option value="mesa">Mesa</option>
+                      <option value="mueble">Mueble</option>
+                    </select>
+                  </label>
+                  <label>
+                    Número o nombre de ubicación
                   <input
                     value={tableNumber}
                     onChange={(e) => setTableNumber(e.target.value)}
-                    placeholder="Ej. Mesa 12 o Mueble 4"
+                    placeholder={locationType === "mesa" ? "Ej. 12" : "Ej. 4"}
                     maxLength={20}
                     required
                   />
-                </label>
+                  </label>
+                </div>
 
                 {orderError && <p role="alert">{orderError}</p>}
 
@@ -1926,4 +2012,3 @@ function App() {
 }
 
 createRoot(document.getElementById("root")).render(<App />);
-i

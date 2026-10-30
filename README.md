@@ -110,6 +110,10 @@ El panel privado tiene páginas separadas para **Bebidas y pedidos**, **Ventas r
 una bebida, se escribe cuántas unidades se vendieron y se registra la operación sin
 crear un pedido de mesa.
 
+Al crear un pedido, el invitado debe indicar si está en una **mesa** o en un
+**mueble**, además de su número o nombre. Desde cada pedido recibido en el panel
+privado se puede descargar una factura individual en PDF al finalizar la fiesta.
+
 Cada bebida conserva en MongoDB los campos `stock`, `minimumStock`, `unitsSold` e
 `inventoryUpdatedAt`; no existe un catálogo separado. El inventario inicial se
 registra desde **Admin > Inventario > Gestionar**, usando **Entrada / reposición**
